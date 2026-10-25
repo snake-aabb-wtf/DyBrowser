@@ -1,0 +1,8 @@
+.venv/
+.tmp/
+__pycache__/
+*.pyc
+profiles/
+artifacts/
+chrome-win64/
+chrome-win64.zip
