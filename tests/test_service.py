@@ -59,6 +59,15 @@ class ServiceTests(unittest.TestCase):
             self.assertEqual(cli('request', sid, payload={'action':'text','css':'#count'})['text'], '计数 1')
             shot = cli('request', sid, payload={'action':'screenshot'})
             self.assertTrue(Path(shot['path']).exists())
+            cli('request', sid, payload={'action':'goto', 'url':url+'/chat.html'})
+            local = cli('request', sid, payload={'action':'snapshot','mode':'dom','css':'#chat'})
+            message = next(n for n in local['dom']['children']
+                           if n.get('attributes', {}).get('data-message-id') == 'm1')
+            sender = next(n for n in message['children']
+                          if n.get('attributes', {}).get('data-user-id') == 'u123')
+            cli('request', sid, payload={'action':'click', 'snapshot_id':local['snapshot_id'], 'ref':sender['ref']})
+            self.assertEqual(cli('request', sid, payload={'action':'evaluate',
+                'expression':"document.querySelector('#sender-one').dataset.clicked"})['result'], 'yes')
             invalid = http('POST', f'/sessions/{sid}/actions', '{')
             self.assertEqual(invalid[1]['error']['code'], 'invalid_json')
             self.assertEqual(http('POST', '/sessions', '[]')[1]['error']['code'], 'invalid_request')

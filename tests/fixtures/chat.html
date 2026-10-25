@@ -1,0 +1,19 @@
+<!doctype html><meta charset="utf-8"><title>DOM Chat Fixture</title>
+<p id="outside">OUTSIDE-CONTAINER</p>
+<section id="chat" class="chat-panel" data-conversation-id="room-42">
+  <div class="message" data-message-id="m1">
+    <span id="sender-one" class="sender" title="成员甲" data-user-id="u123" onclick="this.dataset.clicked='yes'">小明</span>
+    <a class="avatar" href="/user/u123"><img alt="小明头像" src="avatar.png"></a>
+    <div class="body">你好，<em>这是第一条消息</em>！</div>
+    <time datetime="2026-10-25T12:00:00+08:00">12:00</time>
+  </div>
+  <div class="message" data-message-id="m2">
+    <span class="sender" data-user-id="u456">小红</span><div class="body">这是第二条消息</div>
+  </div>
+  <div id="hidden-sender" style="display:none" data-user-id="hidden-user">HIDDEN-NICKNAME</div>
+  <label>密钥<input id="chat-secret" type="password" value="dom-secret-value"></label>
+  <div id="chat-shadow"></div>
+  <script>window.scriptMarker='SCRIPT-NOT-CONTENT';</script>
+  <style>.fixture-unused::after {content:'STYLE-NOT-CONTENT'}</style>
+</section>
+<script>document.querySelector('#chat-shadow').attachShadow({mode:'open'}).innerHTML='<span data-user-id="shadow-user">Shadow 昵称</span>';</script>

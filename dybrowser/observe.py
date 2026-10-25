@@ -2,24 +2,24 @@
 import json
 import uuid
 from .protocol import ToolError, require
+from .dom import COLLECT_DOM
 
 COLLECT = r"""(root, limit) => {
   const elements = []; let scanned = 0, truncated = false;
   function walk(node) {
     if (scanned >= 20000) { truncated = true; return; }
-    for (const e of node.children || []) {
+    for (const e of node) {
       if (++scanned > 20000) { truncated = true; break; }
       const rect = e.getBoundingClientRect();
       if (e.matches('a[href],button,input,textarea,select,summary,[role],[tabindex],[contenteditable="true"]')
           && rect.width > 0 && rect.height > 0 && getComputedStyle(e).visibility !== 'hidden') {
         if (elements.length < limit) elements.push(e); else truncated = true;
       }
-      if (e.shadowRoot) walk(e.shadowRoot);
-      walk(e);
+      if (e.shadowRoot) walk(e.shadowRoot.children);
+      walk(e.children);
     }
   }
-  // Start above body to include body itself when it is contenteditable.
-  walk(root.parentElement || root);
+  walk([root]);
   return {elements, truncated, scanned};
 }"""
 
@@ -57,7 +57,10 @@ async def snapshot(session, page, options):
     if old:
         for h in old['refs'].values():
             await h.dispose()
-    root = scope(page, options).locator('body')
+    root = await resolve_locator(session, page, {
+        'css': options.get('css', 'body'),
+        **({'frame': options['frame']} if 'frame' in options else {}),
+        'timeout': options.get('timeout', 10000)})
     limit = options.get('max_chars', 20000)
     aria = await root.aria_snapshot(timeout=options.get('timeout', 10000))
     # Chromium/Playwright versions may include password values in ARIA text.
@@ -65,20 +68,30 @@ async def snapshot(session, page, options):
     secrets = await root.evaluate(r'''root => {
       const values=[];
       function walk(node) {
+        if (node.shadowRoot) walk(node.shadowRoot);
         for (const e of node.querySelectorAll('*')) {
           if (e.matches('input[type="password"]') && e.value) values.push(e.value);
           if (e.shadowRoot) walk(e.shadowRoot);
         }
       }
+      if (root.matches('input[type="password"]') && root.value) values.push(root.value);
       walk(root); return values;
     }''')
     for secret in sorted(secrets, key=len, reverse=True):
         for form in (secret, json.dumps(secret, ensure_ascii=False)[1:-1], secret.replace("'", "''")):
             aria = aria.replace(form, '[redacted]')
-    collection = await root.evaluate_handle(COLLECT, options.get('max_elements', 200))
+    mode = options.get('mode', 'interactive')
+    if mode == 'dom':
+        collection = await root.evaluate_handle(COLLECT_DOM, {
+            'max_depth': options.get('max_depth', 6),
+            'max_nodes': options.get('max_nodes', 300),
+            'max_chars': limit, 'include_hidden': options.get('include_hidden', False)})
+    else:
+        collection = await root.evaluate_handle(COLLECT, options.get('max_elements', 200))
     refs, elements = {}, []
     try:
-        meta = await collection.evaluate('(v)=>({truncated:v.truncated,scanned:v.scanned})')
+        meta = await collection.evaluate('''v=>({truncated:v.truncated,scanned:v.scanned,
+            dom:v.dom,reasons:v.reasons,node_count:v.node_count,chars:v.chars})''')
         array = await collection.get_property('elements')
         try:
             props = await array.get_properties()
@@ -101,12 +114,17 @@ async def snapshot(session, page, options):
         await collection.dispose()
     sid = uuid.uuid4().hex[:16]
     session.snapshots[pid] = {'id': sid, 'refs': refs}
-    return {'page_id': pid, 'snapshot_id': sid, 'url': page.url,
+    result = {'page_id': pid, 'snapshot_id': sid, 'url': page.url,
             'title': await page.title(), 'aria': aria[:limit],
             'elements': elements, 'truncated': meta['truncated'] or len(aria) > limit,
             'aria_truncated': len(aria) > limit, 'elements_truncated': meta['truncated'],
             'frames': [{'name': f.name, 'url': f.url} for f in page.frames if f != page.main_frame],
-            'frame': options.get('frame'), 'coordinate_space': 'viewport_css_pixels'}
+            'frame': options.get('frame'), 'coordinate_space': 'viewport_css_pixels',
+            'mode': mode, 'root_css': options.get('css', 'body')}
+    if mode == 'dom':
+        result.update(dom=meta['dom'], dom_truncated=meta['truncated'],
+                      dom_truncation_reasons=meta['reasons'], dom_node_count=meta['node_count'])
+    return result
 
 
 async def resolve_locator(session, page, options, *, allow_missing=False):

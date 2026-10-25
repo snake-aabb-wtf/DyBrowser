@@ -44,6 +44,7 @@ OPTIONAL = {
     'ms': int, 'x': (int, float), 'y': (int, float), 'button': str,
     'value': str, 'key': str, 'expression': str, 'arg': object,
     'wait_until': str,
+    'mode': str, 'max_depth': int, 'max_nodes': int, 'include_hidden': bool,
 }
 ELEMENT_ACTIONS = {'click', 'fill', 'type', 'hover', 'select_option', 'check',
                    'uncheck', 'inspect', 'text'}
@@ -52,7 +53,8 @@ LOCATOR_FIELDS = {'ref', 'snapshot_id', 'role', 'name', 'label', 'css',
 ACTION_FIELDS = {
     'goto': {'url', 'wait_until'}, 'back': {'wait_until'},
     'forward': {'wait_until'}, 'reload': {'wait_until'},
-    'snapshot': {'frame', 'max_elements', 'max_chars'},
+    'snapshot': {'frame', 'css', 'mode', 'max_elements', 'max_chars',
+                 'max_depth', 'max_nodes', 'include_hidden'},
     'inspect': {'max_chars'}, 'text': {'max_chars'},
     'screenshot': {'full_page'}, 'click': {'button'},
     'fill': {'text'}, 'type': {'text'}, 'press': {'key'}, 'hover': set(),
@@ -85,7 +87,7 @@ def validate_request(payload):
             require(bool(payload[key].strip()), f'{key} must not be empty')
     for key, low, high in [('timeout', 1, 120000), ('nth', 0, 100000),
                             ('max_elements', 1, 1000), ('max_chars', 100, 100000),
-                            ('ms', 0, 10000)]:
+                            ('ms', 0, 10000), ('max_depth', 0, 20), ('max_nodes', 1, 2000)]:
         if key in payload:
             require(low <= payload[key] <= high, f'{key} must be in {low}..{high}')
     for key, choices in [('button', ('left', 'middle', 'right')),
@@ -121,4 +123,11 @@ def validate_request(payload):
         require('state' not in payload or bool(locators), 'state requires an element locator')
     if action == 'goto':
         require(bool(payload['url'].strip()), 'url must not be empty')
+    if action == 'snapshot':
+        mode = payload.get('mode', 'interactive')
+        require(mode in ('interactive', 'dom'), 'mode must be interactive or dom')
+        require(mode == 'dom' or not any(k in payload for k in ('max_depth', 'max_nodes', 'include_hidden')),
+                'max_depth/max_nodes/include_hidden require mode=dom')
+        require(mode != 'dom' or 'max_elements' not in payload,
+                'mode=dom uses max_nodes instead of max_elements')
     return dict(payload)

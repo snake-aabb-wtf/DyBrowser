@@ -31,6 +31,7 @@ powershell -ExecutionPolicy Bypass -File .\setup.ps1
 | `dybrowser/sessions.py` | 浏览器上下文、长期身份恢复、标签页与生命周期锁 |
 | `dybrowser/store.py` | SQLite 身份记录、数据目录的操作系统互斥锁 |
 | `dybrowser/observe.py` | ARIA 语义树、DOM 元素句柄、定位与脱敏读取 |
+| `dybrowser/dom.py` | 有界局部 DOM 子树、普通文本节点与属性采集 |
 | `dybrowser/actions.py` | 已验证动作的 Playwright 调用 |
 | `tests/` | 本地页面、标准库单元测试及实际 CfT/CLI 集成测试 |
 
@@ -102,7 +103,7 @@ $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 ## Agent 的观察与操作循环
 
 1. 创建 Session，保存 `session_id`。有多页面时同时保存 `page_id`。
-2. `goto` 后调用 `snapshot`，读取 `aria` 语义树与 `elements` DOM 清单。二者互补，清单只覆盖可操作且有布局的元素，不是一份完整 DOM。
+2. `goto` 后调用 `snapshot`，读取 `aria` 语义树与 `elements` DOM 清单。默认清单覆盖可操作且有布局的元素；需要消息昵称、正文关系等普通 DOM 内容时，使用 `mode:dom` 并通过 css 限定容器。
 3. 优先选择明确的 role/name、label 或当前快照的 ref，执行一个动作。
 4. 页面变化后重新观察。出现 `stale_reference` 就重新获取快照；`ambiguous_locator` 则缩小条件；超时后先观察当前状态再决定重试。
 5. 语义或 DOM 定位不足时截图，根据视口 CSS 像素坐标使用 `click_xy`。
@@ -111,7 +112,40 @@ $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 
 快照包含 `snapshot_id`、URL、标题、ARIA 文本、带 `ref` 的元素清单、frame 信息及截断标识。每个元素包含标签、显式 role、名称线索、文本、输入值（密码为 null）、ID、placeholder、href、disabled/checked、bounds、in_viewport。隐式角色以 ARIA 树为准。
 
-`snapshot` 默认最多 200 个 DOM 元素、20000 个 ARIA 字符；通过 `max_elements`（1–1000）和 `max_chars`（100–100000）调整。DOM 遍历最多检查 20000 个节点。`truncated`、`aria_truncated`、`elements_truncated` 表示输出被限制，应缩小到 frame 或使用定位器读取目标。
+`snapshot` 默认 `mode:interactive`，最多 200 个交互元素、20000 个 ARIA 字符；通过 `max_elements`（1–1000）和 `max_chars`（100–100000）调整。两种模式均支持 css 限定根元素，必须唯一匹配，省略时为 body。`truncated`、`aria_truncated`、`elements_truncated` 表示输出被限制，应缩小观察范围。
+
+### 局部 DOM 观察
+
+当默认快照看不到昵称、消息属性或上下文关系时，先找出消息列表的容器，再请求结构化子树：
+
+```json
+{"action":"snapshot","mode":"dom","css":"#chat","max_depth":6,"max_nodes":300,"max_chars":20000,"include_hidden":false}
+```
+
+css 使用目标页面实际的选择器，`#chat` 只是示例。iframe 内可同时传 frame。响应新增 `dom` 树，保留 DOM 顺序和父子关系：元素节点包含 type=element、tag、ref、attributes、visible、bounds、children；普通文本节点为 type=text、text；开放 shadow DOM 的边界为 tag=#shadow-root。不要把同一容器下所有文本压平后猜测发送者，应沿单条消息的父子关系读取昵称与正文。
+
+attributes 包含 id、class、role、title、href、src、alt、name、type、placeholder、datetime、for、value、contenteditable、tabindex，以及 data-*、aria-*。每个元素最多输出 50 个选定属性。脚本、样式、noscript、template、事件处理属性不采集，密码输入框的 value 属性不输出。昵称或 UID 必须以页面中实际存在的字段为依据；DOM 没有提供的平台内部 UID 不作推断。
+
+局部 DOM 的 elements 清单也包含普通元素，每个元素节点的 ref 可配合本次 snapshot_id 执行 click/inspect 等操作。引用生命周期与默认快照一致；新快照替换同页旧引用。DOM 模式不需要先猜测某个普通 span 是否可交互。
+
+| 参数 | 默认值与边界 |
+|---|---|
+| mode | interactive 或 dom，默认 interactive |
+| css | 唯一根容器选择器，默认 body；根元素本身也包含在结果中 |
+| max_depth | 仅 dom，默认 6，范围 0–20；根深度为 0，文本和 shadow-root 也计入深度 |
+| max_nodes | 仅 dom，默认 300，范围 1–2000；元素、文本及 shadow-root 均计入 |
+| max_chars | 默认 20000，范围 100–100000；ARIA 文本和 DOM 树的文本/属性值各自使用此预算 |
+| include_hidden | 仅 dom，默认 false；跳过 display:none、visibility:hidden 的子树。true 时保留这些节点并标记 visible=false |
+
+DOM 模式使用 max_nodes，不接受 max_elements。遍历最多检查 20000 个节点，不自动进入 iframe 文档。屏幕外但未被样式隐藏的 DOM 仍可读取；虚拟列表中尚未渲染的消息不会凭空出现。`dom_truncated` 与 `dom_truncation_reasons` 明确报告 max_depth、max_nodes、max_chars、scan_limit 或 attribute_limit，`dom_node_count` 是实际返回的节点数。字符预算约束树中的文本与属性值，不是整个 JSON 响应字节数；elements 仍提供定位信息。截断时缩小 css 范围或按需增加对应上限，不把缺失数据视作不存在。
+
+PowerShell CLI 示例：
+
+```powershell
+@{action='snapshot'; mode='dom'; css='#chat'; max_depth=8; max_nodes=500} |
+    ConvertTo-Json | Set-Content -Encoding utf8 request.json
+.\.venv\Scripts\python.exe .\dybrowser.py request $sid --file .\request.json
+```
 
 同页新快照、页面或其 frame 导航、关闭页面，会使先前 ref 失效。元素脱离 DOM 也会使其失效。ref 不跨页面使用，必须同时提供原 `snapshot_id`，避免 Agent 误操作新页面上的相似节点。元素仅改变文字而仍留在 DOM 时，ref 仍指向原元素；Agent 应根据任务决定是否重新观察。
 
@@ -125,7 +159,7 @@ $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 |---|---|
 | `goto` | 必填 `url`；可选 `wait_until`: commit/domcontentloaded/load/networkidle，默认 domcontentloaded |
 | `back` / `forward` / `reload` | 导航，同样支持 wait_until |
-| `snapshot` | 可选 frame、max_elements、max_chars；返回 ARIA 与 DOM 引用 |
+| `snapshot` | 可选 css、frame、mode；默认交互元素模式，dom 模式返回局部文本/属性树。上限见局部 DOM 观察章节 |
 | `inspect` | 必填定位条件；返回值、文本、属性线索和脱敏的 HTML 片段；max_chars 默认 10000 |
 | `text` | 必填定位条件；返回截断后的元素可见文本 |
 | `click` | 必填定位条件；可选 button=left/middle/right |

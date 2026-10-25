@@ -7,6 +7,20 @@ except ImportError:
 
 
 class ProtocolTests(unittest.TestCase):
+    def test_dom_snapshot_options_are_validated_by_mode(self):
+        request = {'action':'snapshot', 'mode':'dom', 'css':'#chat',
+                   'max_depth':6, 'max_nodes':300, 'include_hidden':False}
+        self.assertEqual(validate_request(request), request)
+        invalid = [dict(request, mode='unknown'), dict(request, max_depth=-1),
+                   dict(request, max_depth=21), dict(request, max_nodes=0),
+                   dict(request, max_nodes=2001), dict(request, include_hidden='yes'),
+                   dict(request, max_elements=10),
+                   {'action':'snapshot', 'max_depth':2},
+                   {'action':'click', 'css':'button', 'mode':'dom'}]
+        for value in invalid:
+            with self.subTest(value=value), self.assertRaises(ToolError):
+                validate_request(value)
+
     def test_invalid_requests_are_rejected_before_actions(self):
         self.assertIsNotNone(validate_request, 'request validation is not implemented')
         for value in [[], None, {}, {'action': 'surprise'},
