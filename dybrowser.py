@@ -25,7 +25,9 @@ def main():
     create.add_argument('--profile-id')
     create.add_argument('--headless', action='store_true')
     sessions.add_parser('list')
-    sessions.add_parser('close').add_argument('session_id')
+    sessions.add_parser('close', help='close browser, retain persistent identity').add_argument('session_id')
+    sessions.add_parser('resume', help='open browser using an existing Session ID').add_argument('session_id')
+    sessions.add_parser('forget', help='remove identity mapping; retain profile files').add_argument('session_id')
     request = sub.add_parser('request', help='JSON request from argument, --file, or UTF-8 stdin')
     request.add_argument('session_id')
     request.add_argument('payload', nargs='?')
@@ -46,14 +48,18 @@ def main():
             result = client.call('/shutdown', {})
         elif args.command == 'session':
             if args.session_command == 'create':
-                options = {'headless':args.headless}
+                options = {'headless':True} if args.headless else {}
                 if args.profile_id:
                     options['profile_id'] = args.profile_id
                 result = client.create(**options)
             elif args.session_command == 'list':
                 result = client.call('/sessions')
-            else:
+            elif args.session_command == 'close':
                 result = client.close(args.session_id)
+            elif args.session_command == 'resume':
+                result = client.resume(args.session_id)
+            else:
+                result = client.forget(args.session_id)
         else:
             require(not args.payload or not (args.json_payload or args.file), 'Choose one JSON input source')
             if args.file:

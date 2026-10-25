@@ -43,7 +43,7 @@ class Worker:
 
     async def route(self, method, path, payload):
         if path == '/health' and method == 'GET':
-            return {'status': 'ready', 'protocol_version': 1}
+            return {'status': 'ready', 'protocol_version': 2, 'persistent_sessions': True}
         if path == '/sessions':
             if method == 'GET':
                 return await self.manager.list()
@@ -55,6 +55,11 @@ class Worker:
                 return await self.manager.close(parts[1])
             if len(parts) == 3 and parts[2] == 'actions' and method == 'POST':
                 return await self.manager.action(parts[1], payload)
+            if len(parts) == 3 and parts[2] == 'resume' and method == 'POST':
+                require(not payload, 'resume does not accept options')
+                return await self.manager.resume(parts[1])
+            if len(parts) == 3 and parts[2] == 'identity' and method == 'DELETE':
+                return await self.manager.forget(parts[1])
         raise ToolError('not_found', 'Unknown endpoint')
 
     def stop(self):

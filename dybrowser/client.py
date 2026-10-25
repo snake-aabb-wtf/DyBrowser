@@ -32,3 +32,9 @@ class Client:
 
     def close(self, session_id):
         return self.call(f'/sessions/{session_id}', method='DELETE')
+
+    def resume(self, session_id):
+        return self.call(f'/sessions/{session_id}/resume', {})
+
+    def forget(self, session_id):
+        return self.call(f'/sessions/{session_id}/identity', method='DELETE')

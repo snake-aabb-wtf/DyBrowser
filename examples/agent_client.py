@@ -18,9 +18,10 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--url', default='about:blank')
     parser.add_argument('--close', action='store_true')
+    parser.add_argument('--session-id', help='reuse an existing persistent Session ID')
     args = parser.parse_args()
     client = Client()
-    info = unwrap(client.create())
+    info = unwrap(client.resume(args.session_id) if args.session_id else client.create())
     sid = info['session_id']
     try:
         unwrap(client.action(sid, 'goto', url=args.url))

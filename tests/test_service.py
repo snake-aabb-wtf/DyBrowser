@@ -70,7 +70,28 @@ class ServiceTests(unittest.TestCase):
                 self.assertEqual(oversized['error']['code'], 'request_too_large')
             self.assertEqual(http('GET', '/missing')[1]['error']['code'], 'not_found')
             self.assertTrue(http('GET','/health')[1]['ok'])
+            cli('request', sid, payload={'action':'evaluate','expression':
+                "() => { localStorage.setItem('restart','长期身份'); document.cookie='restart=yes; Max-Age=86400; Path=/'; }"})
+            cli('stop')
+            self.assertEqual(proc.wait(timeout=20), 0)
+            proc.stdout.close()
+            proc = subprocess.Popen([sys.executable, '-u', str(ROOT / 'dybrowser.py'),
+                'serve', '--port', '0', '--data-dir', temp.name],
+                cwd=ROOT, stdout=subprocess.PIPE, stderr=log, text=True, encoding='utf-8')
+            lines = queue.Queue()
+            threading.Thread(target=lambda: lines.put(proc.stdout.readline()), daemon=True).start()
+            port = json.loads(lines.get(timeout=25))['data']['port']
+            records = cli('session', 'list')
+            self.assertEqual(next(r for r in records if r['session_id'] == sid)['state'], 'dormant')
+            cli('request', sid, payload={'action':'goto','url':url})
+            state = cli('request', sid, payload={'action':'evaluate','expression':
+                "() => ({value:localStorage.getItem('restart'), cookie:document.cookie})"})
+            self.assertEqual(state['result']['value'], '长期身份')
+            self.assertIn('restart=yes', state['result']['cookie'])
             cli('session', 'close', sid)
+            self.assertEqual(cli('session', 'resume', sid)['session_id'], sid)
+            cli('session', 'forget', sid)
+            self.assertNotIn(sid, [r['session_id'] for r in cli('session', 'list')])
             cli('stop')
             self.assertEqual(proc.wait(timeout=20), 0)
         finally:

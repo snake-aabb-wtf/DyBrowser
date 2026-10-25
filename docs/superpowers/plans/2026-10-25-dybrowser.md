@@ -1,5 +1,7 @@
 # DyBrowser Implementation Plan
 
+> 历史计划：首版任务已完成。后续长期 Session ID 功能已替换首版临时 ID 的生命周期，当前行为与协议以项目 README 为准。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** 为 AI Agent 提供按 Session ID 持续控制本地 CfT 的 Python JSON 工具。

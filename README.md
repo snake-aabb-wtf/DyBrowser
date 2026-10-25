@@ -4,6 +4,8 @@
 
 默认启动可见窗口。浏览器由常驻服务持有，客户端退出不会关闭浏览器。无须运行 `playwright install`。
 
+**Session ID 长期有效并保存到磁盘。** 正常关闭/重启服务后，Agent 继续携带原 ID 发请求，工具会自动拉起该身份对应的浏览器，复用其 Cookie 和站点数据。`session list` 会列出未启动的长期身份，不会因此启动浏览器。
+
 ## 安装与启动
 
 在 PowerShell 中进入本目录：
@@ -31,7 +33,7 @@ powershell -ExecutionPolicy Bypass -File .\setup.ps1
 返回示例（真实 ID 每次不同）：
 
 ```json
-{"ok":true,"data":{"session_id":"...","profile_id":"...","closed":false,"current_page_id":"...","pages":[{"page_id":"...","url":"about:blank"}],"dialogs":[]}}
+{"ok":true,"data":{"session_id":"...","profile_id":"...","persistent":true,"state":"active","closed":false,"current_page_id":"...","pages":[{"page_id":"...","url":"about:blank"}],"dialogs":[]}}
 ```
 
 `--headless` 可在创建 Session 时启用无头模式。CLI 端口选项放在子命令前，例如 `dybrowser.py --port 8766 session create`；服务也接受 `dybrowser.py serve --port 8766`。
@@ -63,11 +65,11 @@ print(view['elements'])
 
 shot = data(client.action(sid, 'screenshot'))
 print(shot['path'])
-# 完成任务后关闭；需要继续操作时保留 Session。
+# 关闭窗口仍保留 Session ID，之后可用原 sid 再次请求。
 # data(client.close(sid))
 ```
 
-[examples/agent_client.py](examples/agent_client.py) 是可运行示例：`python examples/agent_client.py --url https://example.com`。默认保留 Session，打印其 ID；加 `--close` 在示例结束后关闭。
+[examples/agent_client.py](examples/agent_client.py) 是可运行示例：`python examples/agent_client.py --url https://example.com`。默认保留浏览器窗口，打印其 ID；加 `--close` 在示例结束后关闭窗口并保留身份；下次加 `--session-id 原ID` 可继续使用。
 
 ## CLI 请求与 PowerShell 中文
 
@@ -98,6 +100,8 @@ $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 3. 优先选择明确的 role/name、label 或当前快照的 ref，执行一个动作。
 4. 页面变化后重新观察。出现 `stale_reference` 就重新获取快照；`ambiguous_locator` 则缩小条件；超时后先观察当前状态再决定重试。
 5. 语义或 DOM 定位不足时截图，根据视口 CSS 像素坐标使用 `click_xy`。
+
+服务重启或关闭浏览器后，原 `session_id` 仍有效；第一次动作请求自动恢复浏览器。也可显式调用 `session resume`/`client.resume(sid)` 获取恢复后的当前页信息。原 `page_id`、`snapshot_id` 与 ref 属于之前的浏览器运行实例，不跨重启保留：恢复后先 `pages` 或 `snapshot`，再定位操作。`session list` 返回 `state:active` 或 `state:dormant`，dormant 表示身份存在但浏览器未运行。
 
 快照包含 `snapshot_id`、URL、标题、ARIA 文本、带 `ref` 的元素清单、frame 信息及截断标识。每个元素包含标签、显式 role、名称线索、文本、输入值（密码为 null）、ID、placeholder、href、disabled/checked、bounds、in_viewport。隐式角色以 ARIA 树为准。
 
@@ -164,15 +168,20 @@ role/name、label、text 默认 `exact:true`；可显式 `exact:false`。默认�
 | POST | `/sessions` | `{}` 或 `{"profile_id":"指定配置ID","headless":false}` |
 | GET | `/sessions` | 无 |
 | DELETE | `/sessions/{session_id}` | 无 |
+| POST | `/sessions/{session_id}/resume` | `{}`，显式恢复浏览器，沿用原 ID |
+| DELETE | `/sessions/{session_id}/identity` | 无，关闭浏览器并遗忘 ID 映射，保留用户数据目录 |
 | POST | `/sessions/{session_id}/actions` | 动作 JSON |
 | POST | `/shutdown` | `{}` |
 
 请求体为 UTF-8 JSON，最大 1 MiB。返回 `{"ok":true,"data":...}` 或 `{"ok":false,"error":{"code":"...","message":"..."}}`。本工具面向受信任本机 Agent，不提供远程绑定；检查 Host/Origin 并拒绝外部网页跨来源调用。不同 Session 可并行；同 Session 串行。HTTP 客户端超时应大于动作 timeout，附带客户端使用 150 秒上限；客户端断开不代表浏览器动作已撤销，重试前先观察状态。
 
+`GET /health` 的 `protocol_version` 为 2，`persistent_sessions:true`。版本 2 中 DELETE Session 的含义是关闭浏览器、保留长期 ID；显式遗忘身份使用 `/identity`。
+
 | 错误码 | Agent 建议 |
 |---|---|
 | `invalid_request` / `invalid_json` | 修正参数/JSON |
-| `session_not_found` / `session_closed` | 列出 Session 或重新创建 |
+| `session_not_found` | ID 未登记或已被遗忘，列出 Session 或新建身份 |
+| `session_closed` | 操作期间浏览器关闭，重新发起请求或 resume |
 | `page_not_found` | pages 获取有效页面或 page_new |
 | `profile_in_use` | 继续使用原 Session，或创建不同配置 |
 | `stale_reference` | snapshot 后重新选择 ref |
@@ -181,6 +190,8 @@ role/name、label、text 默认 `exact:true`；可显式 `exact:false`。默认�
 | `browser_launch_failed` | 查看错误中的浏览器启动原因、路径或配置占用 |
 | `browser_error` | 查看 Playwright 反馈并重新观察 |
 | `service_unavailable` | 启动服务或核对端口 |
+| `data_dir_in_use` | 同一数据目录已被另一服务使用，连接原服务或选用独立 data-dir |
+| `session_store_error` | 注册表不可读写或损坏，保留 state 目录并检查具体错误；工具不会重置注册表 |
 | `forbidden` / `request_too_large` / `not_found` | 修正来源、请求大小或接口路径 |
 | `internal_error` | 保留错误信息，检查服务与请求 |
 
@@ -192,13 +203,36 @@ role/name、label、text 默认 `exact:true`；可显式 `exact:false`。默认�
 .\.venv\Scripts\python.exe .\dybrowser.py stop
 ```
 
-关闭 Session 保留 `profiles/<profile_id>/`，可重新使用：
+`close` 和 `stop` 只关闭浏览器，长期 ID 及用户数据仍在。重启服务后直接使用原 ID，无须再次 create：
 
 ```powershell
-.\.venv\Scripts\python.exe .\dybrowser.py session create --profile-id '之前返回的profile_id'
+.\.venv\Scripts\python.exe .\dybrowser.py serve
+# 另一个终端：
+.\.venv\Scripts\python.exe .\dybrowser.py session resume $sid
+# 或直接发送动作，自动恢复：
+@{action='snapshot'} | ConvertTo-Json | Set-Content -Encoding utf8 request.json
+.\.venv\Scripts\python.exe .\dybrowser.py request $sid --file .\request.json
 ```
 
-恢复时分配新 Session ID。Cookie、localStorage 等按 Chrome 自身规则保留；完整页面现场、JavaScript 内存与 sessionStorage 不保证恢复。同一配置不能同时使用。重启服务后旧 Session ID 无效。服务 Ctrl+C 或 stop 会关闭所持有浏览器；强制结束进程可能导致浏览器残留或配置被占用。
+持久化文件：
+
+- `state/sessions.sqlite3`：Session ID、profile_id、窗口模式偏好、创建时间的事务性注册表。
+- `profiles/<profile_id>/`：Chrome 管理的 Cookie、localStorage 等浏览器用户数据。
+- `state/service.lock`：操作系统持有的服务锁，防止两个服务同时使用同一数据目录；服务退出时自动释放。
+
+默认数据目录就是项目目录。若通过 `serve --data-dir ...` 指定其他位置，重启时必须使用相同目录。迁移/备份时先关闭服务，将 state 和 profiles 一起保留。state、profiles 均已加入 Git 忽略规则。
+
+`session create --profile-id 已有配置ID` 会恢复该配置原来的长期 Session ID；若它已运行则返回 profile_in_use。旧版本留下的 profile 尚无注册记录时，该命令会为它登记新的长期 ID；旧版本从未保存的临时 ID 无法追溯恢复。
+
+显式遗忘一个长期 ID：
+
+```powershell
+.\.venv\Scripts\python.exe .\dybrowser.py session forget $sid
+```
+
+这会关闭对应浏览器并删除 ID 映射，原 ID 此后返回 session_not_found；用户数据目录仍保留。可以通过 profile_id 再次登记为新身份。Python 对应 `client.resume(sid)` 和 `client.forget(sid)`。
+
+Cookie、localStorage 等按 Chrome 自身规则保留；网站可能使登录过期。完整页面现场、JavaScript 内存、sessionStorage、标签页 ID 和快照引用不保证恢复。headless 偏好保存在注册表中，resume/自动恢复时沿用。服务 Ctrl+C 或 stop 会关闭所持有浏览器；强制结束进程可能导致浏览器残留、配置被占用或尚未落盘的站点数据丢失，注册表会保留已完成的事务。
 
 ## 测试
 
@@ -206,4 +240,4 @@ role/name、label、text 默认 `exact:true`；可显式 `exact:false`。默认�
 .\.venv\Scripts\python.exe -m unittest discover -s tests -v
 ```
 
-使用本地 HTTP 页面和实际 CfT，测试 Session 隔离与数据恢复、popup、无障碍树、ref 生命周期、中文输入、iframe/shadow DOM、导航、坐标点击、截图、超时、异常请求、独立 CLI 调用和服务关闭。测试会短暂显示浏览器窗口；测试产物示例保存在 `artifacts/verification.png`。
+使用本地 HTTP 页面和实际 CfT，测试 Session 隔离与数据恢复、同 ID 跨服务进程重启、Cookie/localStorage 持久化、并发恢复、身份遗忘、数据目录互斥、注册表损坏处理、popup、无障碍树、ref 生命周期、中文输入、iframe/shadow DOM、导航、坐标点击、截图、超时及异常请求。测试会短暂显示浏览器窗口；测试产物示例保存在 `artifacts/verification.png`。

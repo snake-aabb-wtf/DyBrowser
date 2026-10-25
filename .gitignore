@@ -3,6 +3,7 @@
 __pycache__/
 *.pyc
 profiles/
+state/
 artifacts/
 chrome-win64/
 chrome-win64.zip
